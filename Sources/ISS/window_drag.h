@@ -28,4 +28,7 @@ void iss_drag_tracker_stop(void);
  */
 bool iss_drag_current_window(uint32_t *outWindowID);
 
+/** @brief Logs to stderr when ISS_DEBUG_CARRY=1 (diagnostics for carrying dragged windows). */
+void iss_carry_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
+
 #endif /* WINDOW_DRAG_H */

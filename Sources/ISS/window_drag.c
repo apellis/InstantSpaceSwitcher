@@ -1,10 +1,16 @@
 #include "window_drag.h"
 
 #include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
-// Window position and cursor are sampled at slightly different times during a drag
-static const double kDragTolerance = 8.0;
+// Window position and cursor are sampled at slightly different times, so a fast drag shows
+// some lag. Text selection and held clicks never move the window and resizes change its
+// size, so a generous tolerance does not let those through.
+static const double kDragTolerance = 32.0;
 
 static CFMachPortRef mouseTap = NULL;
 static CFRunLoopSourceRef mouseSource = NULL;
@@ -14,6 +20,23 @@ static bool candidateValid = false;
 static uint32_t candidateWindow = 0;
 static CGRect candidateFrame;
 static CGPoint candidateCursor;
+
+void iss_carry_log(const char *format, ...) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *value = getenv("ISS_DEBUG_CARRY");
+        enabled = value && strcmp(value, "1") == 0;
+    }
+    if (!enabled) {
+        return;
+    }
+    va_list args;
+    va_start(args, format);
+    fprintf(stderr, "ISS carry: ");
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+}
 
 bool iss_window_follows_cursor(CGRect downFrame, CGPoint downCursor,
                                CGRect frame, CGPoint cursor, double tolerance) {
@@ -141,10 +164,12 @@ void iss_drag_tracker_stop(void) {
 
 bool iss_drag_current_window(uint32_t *outWindowID) {
     if (!candidateValid || !outWindowID) {
+        iss_carry_log("no normal window was under the cursor at mouse down");
         return false;
     }
     // Covers a missed mouse-up (e.g. while the tap was disabled)
     if (!CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)) {
+        iss_carry_log("left button is not down");
         candidateValid = false;
         return false;
     }
@@ -157,6 +182,7 @@ bool iss_drag_current_window(uint32_t *outWindowID) {
         CFRelease(info);
     }
     if (!found) {
+        iss_carry_log("window %u disappeared", candidateWindow);
         return false;
     }
 
@@ -168,6 +194,11 @@ bool iss_drag_current_window(uint32_t *outWindowID) {
     CFRelease(now);
 
     if (!iss_window_follows_cursor(candidateFrame, candidateCursor, frame, cursor, kDragTolerance)) {
+        iss_carry_log("window %u not following the cursor: window moved (%.0f, %.0f), cursor (%.0f, %.0f), "
+                      "size %.0fx%.0f -> %.0fx%.0f", candidateWindow,
+                      frame.origin.x - candidateFrame.origin.x, frame.origin.y - candidateFrame.origin.y,
+                      cursor.x - candidateCursor.x, cursor.y - candidateCursor.y,
+                      candidateFrame.size.width, candidateFrame.size.height, frame.size.width, frame.size.height);
         return false;
     }
     *outWindowID = candidateWindow;

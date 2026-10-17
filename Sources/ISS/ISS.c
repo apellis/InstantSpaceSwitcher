@@ -3,6 +3,7 @@
 #include "bridged_ops.h"
 #include "event_serialize.h"
 #include "window_drag.h"
+#include "window_focus.h"
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -874,12 +875,16 @@ static bool copy_window_spaces(CGSConnectionID connection, uint32_t windowID,
     return true;
 }
 
-// Switches by carrying the dragged window when one is being dragged. Reads live space IDs
-// (not predictions). byIndex selects requestedIndex, otherwise direction.
+// Switches by carrying the dragged window when one is being dragged. Reads live space IDs,
+// overridden by a pending prediction. byIndex selects requestedIndex, otherwise direction.
 static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int requestedIndex,
                                                ISSDirection direction, unsigned int *outTarget) {
     uint32_t windowID = 0;
-    if (!iss_bridged_available() || !cgs_symbols_available() || !iss_drag_current_window(&windowID)) {
+    if (!iss_bridged_available() || !cgs_symbols_available()) {
+        return ISSCarryNotApplicable;
+    }
+    if (!iss_drag_current_window(&windowID)) {
+        iss_carry_log("no window drag in progress");
         return ISSCarryNotApplicable;
     }
     CGSConnectionID connection = CGSMainConnectionID();
@@ -901,9 +906,12 @@ static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int reques
     if (!displayID || CFGetTypeID(displayID) != CFStringGetTypeID() || !spaces ||
         CFGetTypeID(spaces) != CFArrayGetTypeID() || !current || CFGetTypeID(current) != CFDictionaryGetTypeID() ||
         !number_value(current, CFSTR("id64"), kCFNumberSInt64Type, &currentSpace)) {
+        iss_carry_log("display or space list unavailable");
         CFRelease(displays);
         return ISSCarryNotApplicable;
     }
+    char displayKey[sizeof(((ISSSpaceInfo *)0)->displayID)] = {0};
+    CFStringGetCString(displayID, displayKey, sizeof(displayKey), kCFStringEncodingUTF8);
 
     // Same indexing as extract_space_info_from_display: every space with an id64, in order
     CFMutableArrayRef spaceIDs = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
@@ -930,6 +938,13 @@ static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int reques
         types[count++] = type;
     }
 
+    // A previous switch may still be applying: trust its prediction, as the swipe path does
+    unsigned int predicted = 0;
+    if (foundCurrent && get_prediction(displayKey, &predicted) && predicted < count) {
+        currentIndex = predicted;
+        CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(spaceIDs, predicted), kCFNumberSInt64Type, &currentSpace);
+    }
+
     unsigned int target = 0;
     bool hasTarget = false;
     if (foundCurrent && count > 0) {
@@ -940,6 +955,11 @@ static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int reques
             hasTarget = iss_target_index_for_direction(currentIndex, count, direction, &target);
         }
         result = hasTarget ? ISSCarryNotApplicable : ISSCarryUnchanged;
+        if (!hasTarget) {
+            iss_carry_log("no switch: already on the target or at an edge (index %u of %u)", currentIndex, count);
+        }
+    } else {
+        iss_carry_log("current space not found on the cursor's display");
     }
 
     unsigned int windowSpaceCount = 0;
@@ -947,15 +967,27 @@ static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int reques
     if (hasTarget && copy_window_spaces(connection, windowID, &windowSpaceCount, &windowSpace)) {
         bool carriable = iss_window_can_be_carried(windowSpaceCount, windowSpace, currentSpace,
                                                    types[currentIndex], types[target]);
+        if (!carriable) {
+            iss_carry_log("window %u not carriable (on %u spaces, first %llu; current %llu type %d; target type %d)",
+                      windowID, windowSpaceCount, (unsigned long long)windowSpace,
+                      (unsigned long long)currentSpace, types[currentIndex], types[target]);
+        }
         if (iss_choose_switch_route(true, true, carriable) == ISSSwitchRouteCarry) {
             CGSSpaceID targetSpace = 0;
             CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(spaceIDs, target), kCFNumberSInt64Type, &targetSpace);
             if (iss_bridged_move_window(windowID, targetSpace)) {
                 if (iss_bridged_activate_space(displayID, targetSpace, spaceIDs)) {
+                    // The switch applies asynchronously; until it lands, live state still shows the
+                    // old space, so record the target for follow-up switches and the bounds checks
+                    lastGestureTime = CFAbsoluteTimeGetCurrent();
+                    set_prediction(displayKey, target);
+                    iss_focus_window_soon(windowID);
+                    iss_carry_log("carried window %u from index %u to %u", windowID, currentIndex, target);
                     *outTarget = target;
                     result = ISSCarryDone;
                 } else {
                     // Don't strand the window on a space that is not shown
+                    iss_carry_log("activation failed; moving window %u back", windowID);
                     iss_bridged_move_window(windowID, currentSpace);
                 }
             }
@@ -968,10 +1000,6 @@ static ISSCarryResult try_carry_dragged_window(bool byIndex, unsigned int reques
 }
 
 static void finish_carry(unsigned int target) {
-    // The carry used live space IDs; stale gesture predictions must not outlive it
-    if (predictionsDict) {
-        CFDictionaryRemoveAllValues(predictionsDict);
-    }
     if (switchCallback) {
         switchCallback(target);
     }
