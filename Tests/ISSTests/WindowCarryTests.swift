@@ -51,6 +51,46 @@ final class WindowCarryTests: XCTestCase {
     XCTAssertFalse(follows(windowBy: CGVector(dx: 300, dy: 0), cursorBy: CGVector(dx: 20, dy: 0)))
   }
 
+  // MARK: - Holding a title bar without moving
+
+  private func held(windowBy dw: CGVector, cursorBy dc: CGVector, size: CGSize? = nil) -> Bool {
+    let frame = CGRect(
+      origin: CGPoint(x: downFrame.minX + dw.dx, y: downFrame.minY + dw.dy),
+      size: size ?? downFrame.size)
+    let cursor = CGPoint(x: downCursor.x + dc.dx, y: downCursor.y + dc.dy)
+    return iss_window_is_held(downFrame, downCursor, frame, cursor, 4)
+  }
+
+  /// Pressing and holding without moving, allowing a little cursor jitter.
+  func testStillPressIsHeld() {
+    XCTAssertTrue(held(windowBy: CGVector(dx: 0, dy: 0), cursorBy: CGVector(dx: 0, dy: 0)))
+    XCTAssertTrue(held(windowBy: CGVector(dx: 0, dy: 0), cursorBy: CGVector(dx: 4, dy: -4)))
+  }
+
+  /// Once the cursor or the window moves, it is a drag (or a selection), not a hold.
+  func testMovementEndsHold() {
+    XCTAssertFalse(held(windowBy: CGVector(dx: 0, dy: 0), cursorBy: CGVector(dx: 5, dy: 0)))
+    XCTAssertFalse(held(windowBy: CGVector(dx: 20, dy: 0), cursorBy: CGVector(dx: 20, dy: 0)))
+    XCTAssertFalse(held(windowBy: CGVector(dx: 0, dy: 0), cursorBy: CGVector(dx: 0, dy: 0),
+                        size: CGSize(width: 610, height: 400)))
+  }
+
+  /// Accessibility roles that grab the window when pressed: frame, toolbar, title text.
+  func testDragAreaRoles() {
+    XCTAssertTrue(iss_ax_role_is_drag_area("AXWindow", nil))
+    XCTAssertTrue(iss_ax_role_is_drag_area("AXToolbar", "AXWindow"))
+    XCTAssertTrue(iss_ax_role_is_drag_area("AXStaticText", "AXWindow"))
+  }
+
+  /// Content, controls and nested text never grab the window.
+  func testNonDragAreaRoles() {
+    XCTAssertFalse(iss_ax_role_is_drag_area("AXTextArea", "AXScrollArea"))
+    XCTAssertFalse(iss_ax_role_is_drag_area("AXButton", "AXToolbar"))
+    XCTAssertFalse(iss_ax_role_is_drag_area("AXStaticText", "AXGroup"))
+    XCTAssertFalse(iss_ax_role_is_drag_area("AXStaticText", nil))
+    XCTAssertFalse(iss_ax_role_is_drag_area(nil, "AXWindow"))
+  }
+
   // MARK: - Routing
 
   func testCarryOnlyWhenAvailableDraggedAndCarriable() {

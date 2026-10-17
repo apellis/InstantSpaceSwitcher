@@ -54,6 +54,22 @@ bool iss_window_follows_cursor(CGRect downFrame, CGPoint downCursor,
                                CGRect frame, CGPoint cursor, double tolerance);
 
 /**
+ * @brief Whether a window is held still: the button went down on it but neither the window
+ * nor (beyond the slop) the cursor has moved since. Combined with an Accessibility check
+ * that the press was on the window's title bar or toolbar, this counts as grabbing it.
+ */
+bool iss_window_is_held(CGRect downFrame, CGPoint downCursor,
+                        CGRect frame, CGPoint cursor, double slop);
+
+/**
+ * @brief Whether an Accessibility hit-test result is a part of a window that drags it:
+ * the window frame itself (title bar), its toolbar background, or its title text.
+ * @param role Role of the element under the cursor (e.g. "AXWindow")
+ * @param parentRole Role of its parent, or NULL
+ */
+bool iss_ax_role_is_drag_area(const char *role, const char *parentRole);
+
+/**
  * @brief Compares an Objective-C method type encoding with a compact signature.
  *
  * Offsets are ignored, so "@32@0:8@16Q24" matches "@@:@Q". Anything beyond plain

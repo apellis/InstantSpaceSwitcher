@@ -7,10 +7,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "window_focus.h"
+
 // Window position and cursor are sampled at slightly different times, so a fast drag shows
 // some lag. Text selection and held clicks never move the window and resizes change its
 // size, so a generous tolerance does not let those through.
 static const double kDragTolerance = 32.0;
+// How far the cursor may wander while a window is held still on its title bar
+static const double kHoldSlop = 4.0;
 
 static CFMachPortRef mouseTap = NULL;
 static CFRunLoopSourceRef mouseSource = NULL;
@@ -36,6 +40,13 @@ void iss_carry_log(const char *format, ...) {
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
     va_end(args);
+}
+
+bool iss_window_is_held(CGRect downFrame, CGPoint downCursor,
+                        CGRect frame, CGPoint cursor, double slop) {
+    return frame.size.width == downFrame.size.width && frame.size.height == downFrame.size.height &&
+           fabs(frame.origin.x - downFrame.origin.x) < 1.0 && fabs(frame.origin.y - downFrame.origin.y) < 1.0 &&
+           fabs(cursor.x - downCursor.x) <= slop && fabs(cursor.y - downCursor.y) <= slop;
 }
 
 bool iss_window_follows_cursor(CGRect downFrame, CGPoint downCursor,
@@ -192,6 +203,13 @@ bool iss_drag_current_window(uint32_t *outWindowID) {
     }
     CGPoint cursor = CGEventGetLocation(now);
     CFRelease(now);
+
+    // Holding the title bar without moving yet grabs the window too, as it does natively
+    if (iss_window_is_held(candidateFrame, candidateCursor, frame, cursor, kHoldSlop) &&
+        iss_point_is_window_drag_area(candidateCursor, candidateWindow)) {
+        *outWindowID = candidateWindow;
+        return true;
+    }
 
     if (!iss_window_follows_cursor(candidateFrame, candidateCursor, frame, cursor, kDragTolerance)) {
         iss_carry_log("window %u not following the cursor: window moved (%.0f, %.0f), cursor (%.0f, %.0f), "
